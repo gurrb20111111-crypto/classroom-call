@@ -1,0 +1,15 @@
+# 빌드 산출물
+android/build/
+android/dist/
+__pycache__/
+*.pyc
+
+# ★ 서명키는 절대 공개하지 않는다 (잃어버리면 업데이트 설치가 안 되므로 따로 백업)
+android/keys/
+*.jks
+*.keystore
+
+# 개인 설정
+*.local
+토픽.txt
+반.txt

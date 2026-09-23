@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>교실 호출 표시기</title>
+<style>
+  :root { --bg:#000; --fg:#fff; --accent:#ffd24a; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); overflow:hidden;
+    font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif; }
+  #app { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    padding:5vmin; text-align:center; }
+  #msg { color:var(--fg); font-weight:800; line-height:1.25; word-break:keep-all;
+    opacity:0; transform:scale(0.96); transition:opacity .35s ease, transform .35s ease;
+    text-shadow:0 0 40px rgba(255,210,74,.25); max-width:100%; }
+  #msg.show { opacity:1; transform:scale(1); }
+  #from { color:var(--accent); font-weight:700; margin-top:2.5vmin; font-size:4.5vmin;
+    opacity:0; transition:opacity .35s ease .1s; }
+  #from.show { opacity:.9; }
+  #kind { position:fixed; top:2.4vmin; left:2.8vmin; color:#8a8a8a; font-size:3vmin;
+    font-weight:700; opacity:0; transition:opacity .35s; }
+  #kind.show { opacity:.85; }
+  #time { position:fixed; bottom:3vmin; left:0; right:0; text-align:center;
+    color:#8a8a8a; font-size:3.2vmin; opacity:0; transition:opacity .35s; }
+  #time.show { opacity:1; }
+  #dot { position:fixed; top:2.4vmin; right:2.8vmin; width:2.4vmin; height:2.4vmin;
+    border-radius:50%; background:#c0392b; box-shadow:0 0 8px rgba(0,0,0,.6); transition:background .3s; }
+  #dot.on { background:#2ecc71; }
+  #dot.half { background:#f39c12; }
+  #start { position:fixed; inset:0; background:#000; color:#eee; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:3vmin; z-index:10; cursor:pointer; }
+  #start .cls { font-size:7vmin; color:var(--accent); font-weight:800; }
+  #start .big { font-size:9vmin; }
+  #start .sub { font-size:4.2vmin; color:#9a9a9a; }
+  #start .tp { font-size:2.8vmin; color:#666; text-align:center; line-height:1.6; white-space:pre-line; padding:0 4vmin; }
+</style>
+</head>
+<body>
+  <div id="app"><div><div id="msg"></div><div id="from"></div></div></div>
+  <div id="kind"></div>
+  <div id="time"></div>
+  <div id="dot" title="연결 상태"></div>
+
+  <div id="start">
+    <div class="cls" id="startCls"></div>
+    <div class="big">👆 화면을 한 번 누르세요</div>
+    <div class="sub">교실 호출 표시기를 시작합니다</div>
+    <div class="tp"></div>
+  </div>
+
+<script>
+(function(){
+  // ── 설정 ──────────────────────────────────────────────
+  // 주소 뒤 옵션:
+  //   ?c=2-8    ← 이 교실의 학년-반. (예: 2학년 8반)  ★ 반별 채널의 핵심
+  //   ?t=...    ← 기본(base) 채널을 바꾸고 싶을 때. 안 쓰면 아래 BASE 사용.
+  //   ?sec=60   ← 몇 초 뒤 자동으로 사라질지
+  // 실제 구독 채널 = base-학년-반(우리 반) 하나. (전체 방송은 없음)
+  var qs = new URLSearchParams(location.search);
+  // base 에 반까지 붙여 넣는 실수(…-2-3)는 자동으로 떼어낸다(안 그러면 채널이 …-2-3-2-3 이 됨)
+  var BASE = (qs.get('t') || 'myschool-call-CHANGEME').trim().replace(/-\d-\d{1,2}$/, '');
+  var CLS  = (qs.get('c') || '').trim();                    // "2-8" 형태
+  var CLEAR_SEC = parseInt(qs.get('sec') || '60', 10);      // 자동으로 사라지는 시간(기본 1분)
+  // ─────────────────────────────────────────────────────
+
+  // "2학년8반", "2-8", "208", "2 8" 같은 입력을 모두 "2-8" 로 정리
+  function normCls(s){
+    s = String(s || '').trim();
+    if (/^\d{2,3}$/.test(s)) return parseInt(s[0],10) + '-' + parseInt(s.slice(1),10);  // 208 = 2학년 8반
+    var m = s.match(/(\d+)\s*(?:학년)?\s*[-_. ]?\s*(\d+)\s*(?:반)?/);
+    return m ? (parseInt(m[1],10) + '-' + parseInt(m[2],10)) : '';
+  }
+  CLS = CLS ? normCls(CLS) : '';
+  var CLS_LABEL = CLS ? (CLS.split('-')[0] + '학년 ' + CLS.split('-')[1] + '반') : '';
+
+  // 구독할 채널 목록 [{topic, label}]
+  var TOPICS = [];
+  if (CLS) TOPICS.push({ topic: BASE + '-' + CLS, label: CLS_LABEL });
+
+  var msgEl = document.getElementById('msg');
+  var fromEl = document.getElementById('from');
+  var kindEl = document.getElementById('kind');
+  var timeEl = document.getElementById('time');
+  var dot = document.getElementById('dot');
+  var startEl = document.getElementById('start');
+  document.getElementById('startCls').textContent = CLS_LABEL ? ('📺 ' + CLS_LABEL) : '⚠ 반이 지정되지 않았습니다';
+  document.querySelector('#start .tp').textContent = CLS
+    ? '받는 채널: ' + BASE + '-' + CLS
+    : '주소 뒤에 ?c=2-8 처럼 이 교실의 학년-반을 붙여서 여세요.\n(반이 없으면 아무 호출도 받지 않습니다)';
+
+  var clearTimer = null, wakeLock = null, audioCtx = null;
+
+  function fitFont(text){
+    // 글자 수에 따라 크게/작게 (한 줄 몇 글자든 화면에 꽉 차게)
+    var n = text.length;
+    var vmin = n <= 8 ? 16 : n <= 16 ? 12 : n <= 28 ? 9 : n <= 45 ? 7 : 5.5;
+    msgEl.style.fontSize = vmin + 'vmin';
+  }
+
+  function show(text, kind, sentAt){
+    if (clearTimer) clearTimeout(clearTimer);
+    // 첫 줄=호출 메시지(크게), 나머지 줄(예: '— OOO 로부터')=보내는 사람(작게)
+    var parts = String(text).split('\n');
+    var main = parts.shift();
+    var sub = parts.join(' ').trim();
+    fitFont(main);
+    msgEl.textContent = main;
+    if (sub){ fromEl.textContent = sub; } else { fromEl.textContent = ''; }
+    kindEl.textContent = kind || '';
+    // 보낸 시각(ntfy가 붙여준 time) 표시. 1분 이상 늦게 왔으면 받은 시각도 같이.
+    function hm(dt){ return ('0'+dt.getHours()).slice(-2)+':'+('0'+dt.getMinutes()).slice(-2); }
+    var now = new Date();
+    if (sentAt){
+      var sd = new Date(sentAt * 1000);
+      var late = (now - sd) / 1000;
+      timeEl.textContent = '보낸 시각 ' + hm(sd) + (late >= 60 && late < 86400 ? '  ·  받은 시각 ' + hm(now) : '');
+    } else {
+      timeEl.textContent = '받은 시각 ' + hm(now);
+    }
+    // 리플로우 후 페이드인
+    void msgEl.offsetWidth;
+    msgEl.classList.add('show'); timeEl.classList.add('show');
+    if (kind) kindEl.classList.add('show'); else kindEl.classList.remove('show');
+    if (sub) fromEl.classList.add('show'); else fromEl.classList.remove('show');
+    chime(); vibrate();
+    clearTimer = setTimeout(clearMsg, Math.max(5, CLEAR_SEC) * 1000);
+  }
+  function clearMsg(){
+    msgEl.classList.remove('show'); timeEl.classList.remove('show');
+    fromEl.classList.remove('show'); kindEl.classList.remove('show');
+  }
+
+  function vibrate(){ try { if (navigator.vibrate) navigator.vibrate([180,90,180]); } catch(e){} }
+  function chime(){
+    if (!audioCtx) return;
+    try {
+      var t = audioCtx.currentTime;
+      [880, 1175].forEach(function(f, i){
+        var o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type='sine'; o.frequency.value=f;
+        o.connect(g); g.connect(audioCtx.destination);
+        var s = t + i*0.18;
+        g.gain.setValueAtTime(0, s);
+        g.gain.linearRampToValueAtTime(0.5, s+0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, s+0.35);
+        o.start(s); o.stop(s+0.36);
+      });
+    } catch(e){}
+  }
+
+  // ── ntfy 연결(채널마다 하나씩, 자동 재연결) ──
+  //   채널을 따로 열어두면 한쪽이 끊겨도 다른 쪽은 계속 받습니다.
+  var conns = [];   // [{topic, label, es, ok}]
+  function paintDot(){
+    var on = conns.filter(function(c){ return c.ok; }).length;
+    dot.classList.toggle('on', on === conns.length && on > 0);
+    dot.classList.toggle('half', on > 0 && on < conns.length);
+  }
+  function connectOne(c){
+    try { if (c.es) c.es.close(); } catch(e){}
+    c.es = new EventSource('https://ntfy.sh/' + encodeURIComponent(c.topic) + '/sse');
+    c.es.onopen = function(){ c.ok = true; paintDot(); };
+    c.es.onerror = function(){ c.ok = false; paintDot(); };   // EventSource가 알아서 재연결
+    c.es.onmessage = function(ev){
+      try {
+        var d = JSON.parse(ev.data);
+        if (d.event === 'message' && d.message){
+          show(d.message, c.label, d.time);
+          ack(d);
+        }
+      } catch(e){}
+    };
+  }
+  // ── 수신확인: 콘솔이 붙인 호출 번호(태그 cid-xxxx)가 있으면 '받았음'을 돌려보냄 → 콘솔 '송신 실패' 판정용 ──
+  function cidOf(d){
+    var t = d.tags || [];
+    for (var i = 0; i < t.length; i++) if (String(t[i]).indexOf('cid-') === 0) return String(t[i]).slice(4);
+    return '';
+  }
+  function ack(d){
+    var cid = cidOf(d);
+    if (!cid) return;
+    try {
+      fetch('https://ntfy.sh/' + encodeURIComponent(BASE + '-reply'), {
+        method: 'POST', body: JSON.stringify({ t:'ack', cid:cid, cls:CLS, via:'html' })
+      });
+    } catch(e){}
+  }
+
+  function connect(){
+    if (!conns.length) conns = TOPICS.map(function(t){ return { topic:t.topic, label:t.label, es:null, ok:false }; });
+    conns.forEach(connectOne);
+  }
+
+  // ── 화면 꺼짐 방지 ──
+  async function keepAwake(){
+    try {
+      if ('wakeLock' in navigator){
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', function(){});
+      }
+    } catch(e){}
+  }
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'visible'){
+      keepAwake();
+      conns.forEach(function(c){ if (!c.es || c.es.readyState === 2) connectOne(c); });
+      if (!conns.length) connect();
+    }
+  });
+
+  // ── 시작(사용자 제스처: 전체화면+화면유지+소리 켜기) ──
+  function begin(){
+    startEl.style.display = 'none';
+    try { audioCtx = new (window.AudioContext||window.webkitAudioContext)(); } catch(e){}
+    try { var el=document.documentElement; (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); } catch(e){}
+    keepAwake();
+    connect();
+  }
+  startEl.addEventListener('click', begin);
+})();
+</script>
+</body>
+</html>

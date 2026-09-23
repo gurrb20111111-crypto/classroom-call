@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>교실 호출 보내기</title>
+<style>
+  :root { --bg:#0f1216; --card:#1a1f26; --fg:#e9edf2; --mut:#8a94a2; --accent:#4a90e2; --ok:#2ecc71; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; min-height:100%; background:var(--bg); color:var(--fg);
+    font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif; }
+  .wrap { max-width:520px; margin:0 auto; padding:22px 18px 40px; }
+  h1 { font-size:20px; margin:6px 0 2px; }
+  .tp { color:var(--mut); font-size:12px; margin-bottom:18px; }
+  label { display:block; font-size:13px; color:var(--mut); margin:16px 0 6px; }
+  input, textarea { width:100%; background:var(--card); border:1px solid #2a313b; color:var(--fg);
+    border-radius:12px; padding:14px; font-size:17px; font-family:inherit; }
+  textarea { min-height:80px; resize:vertical; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .chip { background:var(--card); border:1px solid #2a313b; color:var(--fg); border-radius:999px;
+    padding:9px 14px; font-size:14px; cursor:pointer; }
+  .chip:active { background:#232a33; }
+  /* ── 받는 반 고르기 ── */
+  .clsbox { background:var(--card); border:1px solid #2a313b; border-radius:12px; padding:12px; margin-top:6px; }
+  .grade { display:flex; align-items:center; gap:6px; margin:6px 0; flex-wrap:wrap; }
+  .gname { color:var(--mut); font-size:13px; width:44px; flex:none; }
+  .cbtn { background:#222932; border:1px solid #2f3742; color:var(--fg); border-radius:9px;
+    min-width:40px; padding:9px 6px; font-size:14px; cursor:pointer; }
+  .cbtn.on { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:800; }
+  #target { color:#f0a6a6; font-size:13px; margin-top:8px; min-height:18px; }
+  #send { width:100%; margin-top:22px; background:var(--accent); color:#fff; border:0; border-radius:14px;
+    padding:18px; font-size:19px; font-weight:800; cursor:pointer; }
+  #send:active { filter:brightness(.92); }
+  #send:disabled { opacity:.6; }
+  .preview { margin-top:16px; background:#000; border-radius:14px; padding:22px; text-align:center;
+    min-height:70px; display:flex; align-items:center; justify-content:center; }
+  .preview span { font-size:22px; font-weight:800; word-break:keep-all; }
+  #status { text-align:center; margin-top:14px; font-size:15px; min-height:22px; color:var(--mut); }
+  #status.ok { color:var(--ok); }
+  #status.err { color:#e74c3c; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📣 교실 호출 보내기</h1>
+  <div class="tp"></div>
+
+  <label>받는 학생 (선택)</label>
+  <input id="name" type="text" placeholder="예: 지수" autocomplete="off">
+
+  <label>보내는 사람 (선택)</label>
+  <input id="from" type="text" placeholder="예: 권혁규T" autocomplete="off">
+
+  <label>받는 반 (여러 반 동시 선택 가능)</label>
+  <div class="clsbox">
+    <div id="grades"></div>
+    <div id="target">받는 반: (미선택)</div>
+  </div>
+
+  <label>부를 곳 · 빠른 선택</label>
+  <div class="chips" id="chips">
+    <span class="chip">교무실로 오세요</span>
+    <span class="chip">6층 생활교육부로 오세요</span>
+    <span class="chip">상담실로 오세요</span>
+    <span class="chip">보건실로 오세요</span>
+    <span class="chip">교실로 들어오세요</span>
+  </div>
+
+  <label>메시지 (직접 입력/수정 가능)</label>
+  <textarea id="msg" placeholder="여기에 뜰 내용을 적으세요"></textarea>
+
+  <div class="preview"><span id="pv">화면 미리보기</span></div>
+
+  <button id="send">보내기</button>
+  <div id="status"></div>
+</div>
+
+<script>
+(function(){
+  // ── 설정 ──────────────────────────────────────────────
+  //   ?t=...             기본(base) 채널 바꾸기
+  //   ?g=1:6,2:8,3:6     학년별 반 수 (1학년 6반까지, 2학년 8반까지 …)
+  // 보내는 채널: 고른 반마다 base-학년-반 (전체 방송 없음 — 필요한 반을 각각 누름)
+  var qs = new URLSearchParams(location.search);
+  var BASE = qs.get('t') || 'myschool-call-CHANGEME';
+  var COUNTS = parseCounts(qs.get('g') || '1:6,2:8,3:6');
+  // ─────────────────────────────────────────────────────
+
+  function parseCounts(s){
+    var o = {};
+    String(s).split(',').forEach(function(pair){
+      var m = pair.split(':');
+      var g = parseInt(m[0], 10), n = parseInt(m[1], 10);
+      if (g && n) o[g] = n;
+    });
+    return o;
+  }
+
+  document.querySelector('.tp').textContent = '채널(base): ' + BASE + '  ·  반별 채널 = base-학년-반';
+
+  var nameEl = document.getElementById('name');
+  var fromEl = document.getElementById('from');
+  var msgEl  = document.getElementById('msg');
+  var pv     = document.getElementById('pv');
+  var status = document.getElementById('status');
+  var sendBtn= document.getElementById('send');
+  var targetEl = document.getElementById('target');
+
+  try { fromEl.value = localStorage.getItem('call_from') || ''; } catch(e){}  // 보내는 사람 기억
+
+  // ── 반 버튼 만들기 ──
+  var sel = {};          // {"2-8": true}
+  var btns = {};
+  (function buildClasses(){
+    var host = document.getElementById('grades');
+    Object.keys(COUNTS).sort(function(a,b){ return a-b; }).forEach(function(g){
+      var row = document.createElement('div'); row.className = 'grade';
+      var nm = document.createElement('span'); nm.className = 'gname'; nm.textContent = g + '학년';
+      row.appendChild(nm);
+      for (var c = 1; c <= COUNTS[g]; c++){
+        (function(key, c){
+          var b = document.createElement('button');
+          b.type = 'button'; b.className = 'cbtn'; b.textContent = c + '반';
+          b.addEventListener('click', function(){ toggleClass(key); });
+          row.appendChild(b); btns[key] = b;
+        })(g + '-' + c, c);
+      }
+      host.appendChild(row);
+    });
+  })();
+
+  // 마지막에 고른 반 기억(자기 반만 계속 부르는 경우가 많음)
+  try {
+    var saved = JSON.parse(localStorage.getItem('call_sel') || 'null');
+    if (saved && saved.list) saved.list.forEach(function(k){ if (btns[k]) sel[k] = true; });
+  } catch(e){}
+
+  function toggleClass(key){
+    if (sel[key]) delete sel[key]; else sel[key] = true;
+    paintSel();
+  }
+  function selList(){
+    return Object.keys(sel).sort(function(a,b){
+      var A = a.split('-'), B = b.split('-');
+      return (A[0]-B[0]) || (A[1]-B[1]);
+    });
+  }
+  function label(key){ var p = key.split('-'); return p[0] + '학년 ' + p[1] + '반'; }
+  function paintSel(){
+    Object.keys(btns).forEach(function(k){ btns[k].classList.toggle('on', !!sel[k]); });
+    var list = selList();
+    targetEl.textContent = list.length ? '받는 반: ' + list.map(label).join(', ') : '받는 반: (미선택)';
+    try { localStorage.setItem('call_sel', JSON.stringify({ list:list })); } catch(e){}
+  }
+  paintSel();
+
+  // ── 메시지 만들기 ──
+  function josa(nm){
+    var last = nm.charCodeAt(nm.length-1);
+    if (last >= 0xAC00 && last <= 0xD7A3) return ((last-0xAC00)%28) ? '아~ ' : '야~ ';  // 받침 유무
+    return '야~ ';
+  }
+  function compose(){
+    var nm = nameEl.value.trim();
+    var body = msgEl.value.trim();
+    if (!body) return '';
+    var line = nm ? (nm + josa(nm) + body) : body;   // "지수야~ ..." (부르는 말투)
+    var fr = fromEl.value.trim();
+    if (fr) line = line + '\n— ' + fr + ' 로부터';    // 송신자 → 표시기에서 작은 줄로
+    return line;
+  }
+  function refresh(){
+    var t = compose();
+    pv.textContent = (t || '화면 미리보기').replace('\n', '  ·  ');
+  }
+  nameEl.addEventListener('input', refresh);
+  fromEl.addEventListener('input', refresh);
+  msgEl.addEventListener('input', refresh);
+
+  document.getElementById('chips').addEventListener('click', function(e){
+    if (e.target.classList.contains('chip')){ msgEl.value = e.target.textContent; refresh(); }
+  });
+
+  // ── 보내기: 고른 반 채널마다 하나씩 POST ──
+  function targets(){
+    return selList().map(function(k){ return { label: label(k), topic: BASE + '-' + k }; });
+  }
+  sendBtn.addEventListener('click', function(){
+    var text = compose();
+    if (!text){ status.className='err'; status.textContent='보낼 내용을 입력하세요'; return; }
+    var tg = targets();
+    if (!tg.length){ status.className='err'; status.textContent="받는 반을 선택하세요"; return; }
+    try { localStorage.setItem('call_from', fromEl.value.trim()); } catch(e){}
+    sendBtn.disabled = true; status.className=''; status.textContent='보내는 중…';
+    Promise.all(tg.map(function(t){
+      return fetch('https://ntfy.sh/' + encodeURIComponent(t.topic), {
+        method:'POST',
+        headers:{ 'Priority':'urgent', 'Tags':'bell' },  // 전자칠판 ntfy 앱이 '긴급'으로 크게 띄우게
+        body: text
+      }).then(function(r){
+        if (!r.ok) throw new Error(t.label + ' HTTP ' + r.status);
+        return t.label;
+      });
+    })).then(function(oks){
+      var d = new Date();
+      status.className='ok';
+      status.textContent = '✓ ' + oks.join(', ') + ' 에 보냈습니다 ('
+        + ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)+')';
+    }).catch(function(err){
+      status.className='err'; status.textContent='보내기 실패: '+err.message+' (인터넷 확인)';
+    }).finally(function(){ sendBtn.disabled=false; });
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>
