@@ -36,6 +36,7 @@ except Exception:
 TOPIC = "myschool-call-CHANGEME"       # 기본 이름(base). 실제 채널은 base-학년-반. 콘솔과 똑같아야 함
 CLASS = ""                           # 이 교실의 학년-반. 예) "2-8"  (보통은 '반.txt' 로 지정)
 CLEAR_SEC = 60                       # 호출이 몇 초 뒤 자동으로 사라질지
+PING = "__ping__"                    # 연결확인 채널 표시(내부용)
 ACCENT = "#ffd24a"                   # 보내는 사람 줄 색(노랑)
 # =======================================
 
@@ -84,6 +85,7 @@ def _load_channels():
     chans = []
     if cls:
         chans.append(("{}-{}".format(base, cls), class_label(cls)))
+        chans.append(("{}-ping".format(base), PING))   # 콘솔 [연결 확인] — 화면엔 안 띄우고 응답만
     return base, cls, chans
 
 
@@ -219,6 +221,19 @@ class Receiver:
         t.geometry("%dx%d+%d+%d" % (w, h, sw - w - 24, 24))
         self.root.after(3500, t.destroy)
 
+    # ---------- 연결확인 응답: 콘솔 [연결 확인]에 '살아 있음'만 돌려줌(화면 표시 없음) ----------
+    def pong(self, pid):
+        try:
+            body = json.dumps({"t": "pong", "pid": pid, "cls": self.cls, "via": "pc", "ver": "pc"}).encode("utf-8")
+            url = "https://ntfy.sh/" + urllib.parse.quote(self.base + "-reply", safe="")
+            req = urllib.request.Request(url, data=body, method="POST",
+                                         headers={"User-Agent": "okjung-call-receiver"})
+            ctx = self._ctx()
+            urllib.request.urlopen(req, timeout=8, context=ctx) if ctx else urllib.request.urlopen(req, timeout=8)
+            log("연결확인 응답: " + pid)
+        except Exception as e:
+            log("연결확인 응답 실패: %s" % e)
+
     # ---------- 수신확인: 콘솔이 '송신 실패'를 판정할 수 있게 '받았음'을 돌려보냄 ----------
     def ack(self, cid):
         try:
@@ -265,6 +280,15 @@ class Receiver:
                     try:
                         d = json.loads(line)
                     except Exception:
+                        continue
+                    if d.get("event") == "message" and d.get("message") and kind == PING:
+                        if time.time() - (d.get("time") or time.time()) <= 60:   # 옛 핑엔 답하지 않음
+                            try:
+                                pid = json.loads(d["message"]).get("pid")
+                            except Exception:
+                                pid = None
+                            if pid:
+                                threading.Thread(target=self.pong, args=(pid,), daemon=True).start()
                         continue
                     if d.get("event") == "message" and d.get("message"):
                         msg = d["message"]

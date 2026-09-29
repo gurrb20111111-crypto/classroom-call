@@ -5,8 +5,8 @@
      · 받는 길 2개: (1) 같은 학교망이면 교사 PC → 칠판 직접(LAN)  (2) 인터넷 중계 ntfy.sh -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="kr.okjung.classcall"
-    android:versionCode="4"
-    android:versionName="1.3">
+    android:versionCode="6"
+    android:versionName="1.5">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="29" />
 

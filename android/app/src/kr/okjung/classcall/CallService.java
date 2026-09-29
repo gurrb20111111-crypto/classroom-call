@@ -46,6 +46,7 @@ public class CallService extends Service {
     private static final String CH_ID = "classcall";
     private static final int NOTI_ID = 1001;
 
+    public static final String VERSION = "1.5";
     public static volatile boolean running = false;
     private static final Map<String, String> STATUS = new HashMap<String, String>();  // 이름 → 상태
 
@@ -84,7 +85,9 @@ public class CallService extends Service {
 
         // 우리 반 채널 하나만 듣는다(전체 방송은 없음 — 교무실에서 필요한 반을 각각 고른다)
         if (Prefs.useNtfy(this) && base.length() > 0) {
-            if (cls.length() > 0) startNtfy(base + "-" + cls, Prefs.label(cls));
+            // 우리 반 채널 + 연결확인(핑) 채널을 한 연결로 같이 듣는다(연결 수를 늘리지 않으려고).
+            // 핑은 화면에 띄우지 않고 조용히 '살아 있음(pong)'만 돌려준다.
+            if (cls.length() > 0) startNtfy(base + "-" + cls, Prefs.label(cls), base + "-ping");
             else setStatus("ntfy", "⚠ '우리 반'이 비어 있어 아무 호출도 받지 않습니다");
         }
         if (Prefs.useLan(this)) {
@@ -134,7 +137,7 @@ public class CallService extends Service {
     }
 
     // ---------------- 1) 인터넷 중계(ntfy) ----------------
-    private void startNtfy(final String topic, final String kind) {
+    private void startNtfy(final String topic, final String kind, final String pingTopic) {
         setStatus("ntfy:" + kind, "연결 중…");
         new Thread(new Runnable() {
             public void run() {
@@ -143,7 +146,8 @@ public class CallService extends Service {
                 while (alive) {
                     HttpURLConnection conn = null;
                     try {
-                        String u = "https://ntfy.sh/" + URLEncoder.encode(topic, "UTF-8") + "/json";
+                        String u = "https://ntfy.sh/" + URLEncoder.encode(topic, "UTF-8")
+                                + "," + URLEncoder.encode(pingTopic, "UTF-8") + "/json";
                         if (lastId != null) u += "?since=" + URLEncoder.encode(lastId, "UTF-8");
                         URL url = new URL(u);
                         conn = (HttpURLConnection) url.openConnection();
@@ -166,6 +170,10 @@ public class CallService extends Service {
                                 if (!firstSeen(id)) continue;                 // 이미 띄운 호출(재접속 중복)
                                 long sent = o.optLong("time", 0);             // ntfy가 붙여주는 보낸 시각(초)
                                 long now = System.currentTimeMillis() / 1000L;
+                                if (pingTopic.equals(o.optString("topic"))) { // ★ 연결확인: 화면엔 아무것도 안 띄움
+                                    if (sent == 0 || now - sent <= PING_STALE_SEC) handlePing(o);
+                                    continue;
+                                }
                                 if (sent > 0 && now - sent > STALE_SEC) {    // 너무 오래된 호출은 안 띄움
                                     Log.add("오래된 호출 건너뜀(" + (now - sent) + "초 전)");
                                     continue;
@@ -282,9 +290,9 @@ public class CallService extends Service {
 
     private String info(boolean ok) {
         String cls = Prefs.cls(this);
-        return "{\"ok\":" + ok + ",\"app\":\"classcall\",\"class\":\"" + cls + "\",\"label\":\""
+        return "{\"ok\":" + ok + ",\"app\":\"classcall\",\"ver\":\"" + VERSION + "\",\"class\":\"" + cls + "\",\"label\":\""
                 + Prefs.label(cls) + "\",\"room\":\"" + Prefs.room(this).replace("\"", "")
-                + "\",\"ip\":\"" + myIp() + "\",\"port\":" + Prefs.port(this) + "}";
+                + "\",\"ip\":\"" + myIp() + "\",\"mac\":\"" + myMac() + "\",\"port\":" + Prefs.port(this) + "}";
     }
 
     private void respond(OutputStream out, int code, String json) throws Exception {
@@ -331,6 +339,105 @@ public class CallService extends Service {
     }
 
     // ---------------- 잡다 ----------------
+    /**
+     * 옆 칠판 전원 켜기 중계. 교무실 PC와 칠판은 네트워크 구간이 달라 Wake-on-LAN 신호가 안 닿는다.
+     * 그래서 이미 켜져 있는 칠판이 '같은 구간'에서 대신 매직 패킷을 쏜다. (자기 자신은 건너뜀)
+     */
+    private void handleWake(JSONObject body) {
+        org.json.JSONArray macs = body.optJSONArray("macs");
+        if (macs == null) return;
+        String mine = myMac();
+        String ip = myIp();
+        int n = 0;
+        for (int i = 0; i < macs.length(); i++) {
+            String mac = macs.optString(i, "").toUpperCase();
+            if (mac.length() == 0 || mac.equals(mine)) continue;
+            if (sendMagic(mac, ip)) n++;
+        }
+        if (n > 0) Log.add("옆 칠판 전원 켜기 신호 중계: " + n + "대");
+    }
+
+    /** 매직 패킷(FF×6 + MAC×16)을 이 칠판이 속한 구간에 방송. */
+    private static boolean sendMagic(String mac, String myIp) {
+        DatagramSocket ds = null;
+        try {
+            String hex = mac.replaceAll("[^0-9A-Fa-f]", "");
+            if (hex.length() != 12) return false;
+            byte[] m = new byte[6];
+            for (int i = 0; i < 6; i++) m[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+            byte[] pkt = new byte[6 + 16 * 6];
+            for (int i = 0; i < 6; i++) pkt[i] = (byte) 0xff;
+            for (int i = 0; i < 16; i++) System.arraycopy(m, 0, pkt, 6 + i * 6, 6);
+            ds = new DatagramSocket();
+            ds.setBroadcast(true);
+            java.util.List<String> dst = new java.util.ArrayList<String>();
+            dst.add("255.255.255.255");
+            if (myIp != null && myIp.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+                dst.add(myIp.substring(0, myIp.lastIndexOf('.')) + ".255");
+            }
+            for (int r = 0; r < 3; r++) {
+                for (String d : dst) {
+                    InetAddress a = InetAddress.getByName(d);
+                    ds.send(new DatagramPacket(pkt, pkt.length, a, 9));
+                    ds.send(new DatagramPacket(pkt, pkt.length, a, 7));
+                }
+                sleep(200);
+            }
+            return true;
+        } catch (Throwable t) {
+            Log.add("전원 켜기 신호 실패: " + t);
+            return false;
+        } finally {
+            if (ds != null) try { ds.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    /** 이 칠판의 유선(없으면 무선) MAC 주소. 못 읽으면 "". 콘솔이 전원 켜기용으로 자동 등록한다. */
+    public static String myMac() {
+        String any = "";
+        try {
+            for (Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements(); ) {
+                NetworkInterface ni = en.nextElement();
+                if (ni.isLoopback()) continue;
+                byte[] hw = ni.getHardwareAddress();
+                if (hw == null || hw.length != 6) continue;
+                StringBuilder sb = new StringBuilder();
+                boolean zero = true;
+                for (int i = 0; i < 6; i++) {
+                    if (hw[i] != 0) zero = false;
+                    sb.append(i == 0 ? "" : ":").append(String.format("%02X", hw[i] & 0xff));
+                }
+                String mac = sb.toString();
+                if (zero || mac.startsWith("02:00:00")) continue;          // 가짜(가림) 주소
+                String name = ni.getName() == null ? "" : ni.getName();
+                if (name.startsWith("eth")) return mac;                    // 유선이 전원 켜기에 쓰임
+                if (any.length() == 0) any = mac;
+            }
+        } catch (Throwable ignored) { }
+        return any;
+    }
+
+    /** 연결확인(핑)은 이보다 오래된 것엔 답하지 않는다(재접속 때 옛 핑에 답하면 '연결됨'으로 잘못 보임). */
+    private static final long PING_STALE_SEC = 60;
+
+    /** 콘솔의 [연결 확인] 요청에 '살아 있음'을 돌려준다. 화면·소리 없음.
+     *  같은 채널로 오는 'wake' 요청은 꺼진 옆 칠판을 대신 깨우는 중계다. */
+    private void handlePing(JSONObject o) {
+        try {
+            JSONObject body = new JSONObject(o.optString("message", "{}"));
+            if ("wake".equals(body.optString("t"))) {
+                handleWake(body);
+                return;
+            }
+            String pid = body.optString("pid", "");
+            if (pid.length() == 0) return;
+            Reply.pong(this, pid, myIp(), Prefs.port(this), myMac());
+            Log.add("연결확인 요청에 응답(" + pid + ")");
+        } catch (Throwable t) {
+            Log.add("연결확인 응답 실패: " + t);
+        }
+    }
+
     /** 이 시간보다 오래 전에 보낸 호출은 재접속으로 뒤늦게 받아도 띄우지 않는다(엉뚱한 때 뜨는 것 방지). */
     private static final long STALE_SEC = 180;
     private static final java.util.LinkedHashSet<String> SEEN = new java.util.LinkedHashSet<String>();

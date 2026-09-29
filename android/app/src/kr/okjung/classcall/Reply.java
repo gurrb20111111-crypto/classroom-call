@@ -19,15 +19,29 @@ import java.net.URLEncoder;
 public class Reply {
 
     public static void ack(Context ctx, String cid) {
-        send(ctx, "ack", cid, null);
+        send(ctx, "ack", cid, null, null);
     }
 
     public static void reply(Context ctx, String cid, String text) {
-        send(ctx, "reply", cid, text);
+        send(ctx, "reply", cid, text, null);
     }
 
-    private static void send(final Context ctx, final String type, final String cid, final String text) {
-        if (cid == null || cid.length() == 0) return;          // 번호 없는 호출(옛 콘솔/전송기)은 돌려줄 곳이 없음
+    /** 연결확인 응답. 콘솔이 보낸 핑 번호(pid)와 이 칠판의 학교망 주소를 돌려준다(주소는 직접 전송용 자동 등록에 쓰임). */
+    public static void pong(Context ctx, String pid, String ip, int port, String mac) {
+        try {
+            JSONObject extra = new JSONObject();
+            extra.put("pid", pid);
+            extra.put("ver", CallService.VERSION);
+            extra.put("ip", ip);
+            extra.put("port", port);
+            if (mac != null && mac.length() > 0) extra.put("mac", mac);   // 전원 켜기(WoL)용
+            send(ctx, "pong", null, null, extra);
+        } catch (Throwable ignored) { }
+    }
+
+    private static void send(final Context ctx, final String type, final String cid, final String text,
+                             final JSONObject extra) {
+        if ((cid == null || cid.length() == 0) && extra == null) return;   // 번호 없는 호출은 돌려줄 곳이 없음
         final Context app = ctx.getApplicationContext();
         new Thread(new Runnable() {
             public void run() {
@@ -37,7 +51,11 @@ public class Reply {
                     if (base.length() == 0) return;
                     JSONObject o = new JSONObject();
                     o.put("t", type);
-                    o.put("cid", cid);
+                    if (cid != null) o.put("cid", cid);
+                    if (extra != null) {
+                        java.util.Iterator<String> it = extra.keys();
+                        while (it.hasNext()) { String k = it.next(); o.put(k, extra.get(k)); }
+                    }
                     o.put("cls", Prefs.cls(app));
                     o.put("via", "app");
                     if (text != null) o.put("reply", text);
@@ -54,9 +72,9 @@ public class Reply {
                     os.write(body);
                     os.close();
                     int code = c.getResponseCode();
-                    Log.add(("ack".equals(type) ? "수신확인" : "답장 '" + text + "'") + " 보냄 → " + code);
+                    Log.add(("ack".equals(type) ? "수신확인" : "pong".equals(type) ? "연결확인 응답" : "답장 '" + text + "'") + " 보냄 → " + code);
                 } catch (Throwable t) {
-                    Log.add(("ack".equals(type) ? "수신확인" : "답장") + " 보내기 실패: " + t);
+                    Log.add(("ack".equals(type) ? "수신확인" : "pong".equals(type) ? "연결확인 응답" : "답장") + " 보내기 실패: " + t);
                 } finally {
                     if (c != null) try { c.disconnect(); } catch (Throwable ignored) { }
                 }

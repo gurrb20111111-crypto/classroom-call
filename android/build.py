@@ -14,6 +14,12 @@ import sys
 import zipfile
 from pathlib import Path
 
+# 콘솔이 cp949 여도 ✓ 같은 글자 때문에 빌드 끝에서 죽지 않게
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
 ROOT = Path(__file__).resolve().parent
 APP = ROOT / "app"
 DIST = ROOT / "dist"
